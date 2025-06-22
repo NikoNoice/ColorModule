@@ -6,30 +6,32 @@ local ColorConfig = {
     Enabled = true,
     AnimationSpeed = 2, -- Speed multiplier for animations
     
+    -- Wave settings (for perimeter animation)
+    WaveEnabled = true,
+    WaveSpeed = 2,
+    WaveSize = 0.08, -- How pronounced the wave effect is
+    WaveIntensity = 0.8, -- Blend intensity between base and wave color
+    WaveSegments = 80, -- Number of segments around box perimeter
+    
     -- Rainbow settings
     RainbowEnabled = true,
     RainbowSpeed = 1.5, -- How fast colors cycle
     RainbowSaturation = 1, -- Color intensity (0-1)
     RainbowBrightness = 1, -- Color brightness (0-1)
     
-    -- Wave settings
-    WaveEnabled = true,
-    WaveSpeed = 3,
-    WaveLength = 2, -- How stretched the wave is
-    WaveIntensity = 0.5, -- How much the wave affects the color
-    
     -- Pulse settings
     PulseEnabled = true,
     PulseSpeed = 2,
     PulseIntensity = 0.3,
     
-    -- Base colors (when animations are disabled)
-    BaseBoxColor = Color3.fromRGB(255, 255, 255),
+    -- Base colors
+    BaseBoxColor = Color3.fromRGB(0, 170, 255),
+    BaseWaveColor = Color3.fromRGB(255, 0, 255),
     BaseHealthbarColor = Color3.fromRGB(0, 255, 0),
     BaseTextColor = Color3.fromRGB(255, 255, 255),
     
-    -- Color modes
-    BoxColorMode = "rainbow", -- "rainbow", "wave", "pulse", "static"
+    -- Color modes for different ESP elements
+    BoxColorMode = "wave", -- "wave", "rainbow", "pulse", "static"
     HealthbarColorMode = "gradient", -- "rainbow", "gradient", "static"
     TextColorMode = "rainbow", -- "rainbow", "static"
     SkeletonColorMode = "rainbow", -- "rainbow", "wave", "static"
@@ -38,15 +40,17 @@ local ColorConfig = {
     SyncAnimations = false, -- Sync all animations to same timing
     IndividualPlayerColors = true, -- Each player gets different color offset
     DistanceColorEffect = false, -- Color changes based on distance
-    
-    -- Edge animation settings (the circular motion effect)
-    EdgeAnimationEnabled = true,
-    EdgeAnimationSpeed = 2,
-    EdgeColorSeparation = 0.25, -- How separated the edge colors are (0-1)
 }
 
+-- Internal variables
 local startTime = tick()
 local playerColorOffsets = {}
+local waveTime = 0
+
+-- Update wave time
+game:GetService("RunService").Heartbeat:Connect(function(dt)
+    waveTime = waveTime + dt
+end)
 
 -- Utility functions
 local function HSVtoRGB(h, s, v)
@@ -76,29 +80,6 @@ local function HSVtoRGB(h, s, v)
     return Color3.new(r, g, b)
 end
 
-local function RGBtoHSV(color)
-    local r, g, b = color.R, color.G, color.B
-    local max = math.max(r, g, b)
-    local min = math.min(r, g, b)
-    local h, s, v = 0, 0, max
-    
-    local d = max - min
-    s = max == 0 and 0 or d / max
-    
-    if max ~= min then
-        if max == r then
-            h = (g - b) / d + (g < b and 6 or 0)
-        elseif max == g then
-            h = (b - r) / d + 2
-        elseif max == b then
-            h = (r - g) / d + 4
-        end
-        h = h / 6
-    end
-    
-    return h, s, v
-end
-
 local function lerpColor(color1, color2, alpha)
     return Color3.new(
         color1.R + (color2.R - color1.R) * alpha,
@@ -125,80 +106,118 @@ local function getPlayerOffset(player)
     return playerColorOffsets[player]
 end
 
--- Main color calculation functions
-function ColorModule:GetRainbowColor(timeOffset, player)
-    timeOffset = timeOffset or 0
-    local currentTime = tick() - startTime
-    local playerOffset = getPlayerOffset(player)
+-- Main wave color function (like the original script)
+function ColorModule:GetWaveColor(baseColor, waveColor, position, totalPerimeter, player, colorMode)
+    colorMode = colorMode or ColorConfig.BoxColorMode
     
-    local hue = ((currentTime * ColorConfig.RainbowSpeed * ColorConfig.AnimationSpeed + timeOffset + playerOffset) % 1)
-    
-    return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
-end
-
-function ColorModule:GetWaveColor(baseColor, timeOffset, wavePosition, player)
-    timeOffset = timeOffset or 0
-    wavePosition = wavePosition or 0
-    local currentTime = tick() - startTime
-    local playerOffset = getPlayerOffset(player)
-    
-    local wave = math.sin((currentTime * ColorConfig.WaveSpeed * ColorConfig.AnimationSpeed + timeOffset + playerOffset + wavePosition * ColorConfig.WaveLength) * math.pi * 2)
-    wave = (wave + 1) / 2 -- Normalize to 0-1
-    
-    local h, s, v = RGBtoHSV(baseColor)
-    h = (h + wave * ColorConfig.WaveIntensity) % 1
-    
-    return HSVtoRGB(h, s, v)
-end
-
-function ColorModule:GetPulseColor(baseColor, timeOffset, player)
-    timeOffset = timeOffset or 0
-    local currentTime = tick() - startTime
-    local playerOffset = getPlayerOffset(player)
-    
-    local pulse = math.sin((currentTime * ColorConfig.PulseSpeed * ColorConfig.AnimationSpeed + timeOffset + playerOffset) * math.pi * 2)
-    pulse = (pulse + 1) / 2 -- Normalize to 0-1
-    
-    local intensity = 1 - (ColorConfig.PulseIntensity * pulse)
-    
-    return Color3.new(
-        baseColor.R * intensity,
-        baseColor.G * intensity,
-        baseColor.B * intensity
-    )
-end
-
-function ColorModule:GetDistanceColor(baseColor, distance, maxDistance)
-    if not ColorConfig.DistanceColorEffect then
+    if not ColorConfig.Enabled then
         return baseColor
     end
     
-    local distanceRatio = math.clamp(distance / maxDistance, 0, 1)
-    local nearColor = Color3.fromRGB(0, 255, 0) -- Green for close
-    local farColor = Color3.fromRGB(255, 0, 0) -- Red for far
+    local playerOffset = getPlayerOffset(player)
+    local timeOffset = ColorConfig.SyncAnimations and 0 or (playerOffset * 10)
+    local currentTime = waveTime + timeOffset
     
-    return lerpColor(nearColor, farColor, distanceRatio)
+    local f = 0
+    
+    if colorMode == "wave" and ColorConfig.WaveEnabled then
+        -- Wave effect (like the original script)
+        local angle = (position / totalPerimeter) * math.pi * 2 * 3 + currentTime * ColorConfig.WaveSpeed * 3
+        f = (math.sin(angle) * ColorConfig.WaveSize + ColorConfig.WaveSize) / (ColorConfig.WaveSize * 2)
+        f = math.clamp(f, 0, 1) ^ ColorConfig.WaveIntensity
+        return lerpColor(baseColor, waveColor, f)
+        
+    elseif colorMode == "pulse" and ColorConfig.PulseEnabled then
+        -- Pulse effect
+        f = (math.sin(currentTime * ColorConfig.PulseSpeed * 2) + 1) / 2
+        return lerpColor(baseColor, waveColor, f * ColorConfig.PulseIntensity)
+        
+    elseif colorMode == "rainbow" and ColorConfig.RainbowEnabled then
+        -- Rainbow effect that flows around the perimeter
+        local hue = (((position / totalPerimeter) + currentTime * ColorConfig.RainbowSpeed) % 1)
+        return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
+    end
+    
+    return baseColor
 end
 
--- Main color getter functions for ESP elements
+-- Generate colors for segmented box perimeter
+function ColorModule:GetPerimeterColors(player, boxWidth, boxHeight, segments)
+    if not ColorConfig.Enabled then
+        local color = ColorConfig.BaseBoxColor
+        local colors = {}
+        for i = 1, segments do
+            colors[i] = color
+        end
+        return colors
+    end
+    
+    segments = segments or ColorConfig.WaveSegments
+    local totalPerimeter = 2 * (boxWidth + boxHeight)
+    local colors = {}
+    
+    -- Calculate position along perimeter for each segment
+    local sideSegs = math.floor(segments / 4)
+    local segmentPositions = {}
+    
+    -- Top edge
+    for i = 0, sideSegs - 1 do
+        local pos = (i / sideSegs) * boxWidth
+        table.insert(segmentPositions, pos)
+    end
+    
+    -- Right edge
+    for i = 0, sideSegs - 1 do
+        local pos = boxWidth + (i / sideSegs) * boxHeight
+        table.insert(segmentPositions, pos)
+    end
+    
+    -- Bottom edge
+    for i = 0, sideSegs - 1 do
+        local pos = boxWidth + boxHeight + (i / sideSegs) * boxWidth
+        table.insert(segmentPositions, pos)
+    end
+    
+    -- Left edge
+    for i = 0, sideSegs - 1 do
+        local pos = 2 * boxWidth + boxHeight + (i / sideSegs) * boxHeight
+        table.insert(segmentPositions, pos)
+    end
+    
+    -- Generate colors for each segment
+    for i, position in ipairs(segmentPositions) do
+        colors[i] = self:GetWaveColor(
+            ColorConfig.BaseBoxColor,
+            ColorConfig.BaseWaveColor,
+            position,
+            totalPerimeter,
+            player,
+            ColorConfig.BoxColorMode
+        )
+    end
+    
+    return colors
+end
+
+-- Standard color getters for other ESP elements
 function ColorModule:GetBoxColor(player, distance, maxDistance)
     if not ColorConfig.Enabled then
         return ColorConfig.BaseBoxColor
     end
     
-    local baseColor = ColorConfig.BaseBoxColor
     local timeOffset = ColorConfig.SyncAnimations and 0 or (getPlayerOffset(player) * 10)
     
     if ColorConfig.BoxColorMode == "rainbow" and ColorConfig.RainbowEnabled then
-        baseColor = self:GetRainbowColor(timeOffset, player)
-    elseif ColorConfig.BoxColorMode == "wave" and ColorConfig.WaveEnabled then
-        baseColor = self:GetWaveColor(baseColor, timeOffset, 0, player)
+        local currentTime = waveTime + timeOffset
+        local hue = ((currentTime * ColorConfig.RainbowSpeed) % 1)
+        return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
     elseif ColorConfig.BoxColorMode == "pulse" and ColorConfig.PulseEnabled then
-        baseColor = self:GetPulseColor(baseColor, timeOffset, player)
+        local currentTime = waveTime + timeOffset
+        local pulse = (math.sin(currentTime * ColorConfig.PulseSpeed * 2) + 1) / 2
+        return lerpColor(ColorConfig.BaseBoxColor, ColorConfig.BaseWaveColor, pulse * ColorConfig.PulseIntensity)
     end
     
-    -- Apply distance effect
-    return self:GetDistanceColor(baseColor, distance or 0, maxDistance or 1000)
+    return ColorConfig.BaseBoxColor
 end
 
 function ColorModule:GetHealthbarColor(player, healthPercentage, distance, maxDistance)
@@ -206,20 +225,20 @@ function ColorModule:GetHealthbarColor(player, healthPercentage, distance, maxDi
         return ColorConfig.BaseHealthbarColor
     end
     
-    local baseColor = ColorConfig.BaseHealthbarColor
     local timeOffset = ColorConfig.SyncAnimations and 0 or (getPlayerOffset(player) * 10)
     
     if ColorConfig.HealthbarColorMode == "rainbow" and ColorConfig.RainbowEnabled then
-        baseColor = self:GetRainbowColor(timeOffset, player)
+        local currentTime = waveTime + timeOffset
+        local hue = ((currentTime * ColorConfig.RainbowSpeed) % 1)
+        return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
     elseif ColorConfig.HealthbarColorMode == "gradient" then
         -- Health-based gradient (red to green)
         local lowColor = Color3.fromRGB(255, 0, 0)
         local highColor = Color3.fromRGB(0, 255, 0)
-        baseColor = lerpColor(lowColor, highColor, healthPercentage)
+        return lerpColor(lowColor, highColor, healthPercentage)
     end
     
-    -- Apply distance effect
-    return self:GetDistanceColor(baseColor, distance or 0, maxDistance or 1000)
+    return ColorConfig.BaseHealthbarColor
 end
 
 function ColorModule:GetTextColor(player, distance, maxDistance)
@@ -227,15 +246,15 @@ function ColorModule:GetTextColor(player, distance, maxDistance)
         return ColorConfig.BaseTextColor
     end
     
-    local baseColor = ColorConfig.BaseTextColor
     local timeOffset = ColorConfig.SyncAnimations and 0 or (getPlayerOffset(player) * 10)
     
     if ColorConfig.TextColorMode == "rainbow" and ColorConfig.RainbowEnabled then
-        baseColor = self:GetRainbowColor(timeOffset, player)
+        local currentTime = waveTime + timeOffset
+        local hue = ((currentTime * ColorConfig.RainbowSpeed) % 1)
+        return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
     end
     
-    -- Apply distance effect
-    return self:GetDistanceColor(baseColor, distance or 0, maxDistance or 1000)
+    return ColorConfig.BaseTextColor
 end
 
 function ColorModule:GetSkeletonColor(player, partIndex, distance, maxDistance)
@@ -243,41 +262,24 @@ function ColorModule:GetSkeletonColor(player, partIndex, distance, maxDistance)
         return ColorConfig.BaseBoxColor
     end
     
-    local baseColor = ColorConfig.BaseBoxColor
     local timeOffset = ColorConfig.SyncAnimations and 0 or ((getPlayerOffset(player) * 10) + (partIndex or 0) * 0.5)
     
     if ColorConfig.SkeletonColorMode == "rainbow" and ColorConfig.RainbowEnabled then
-        baseColor = self:GetRainbowColor(timeOffset, player)
+        local currentTime = waveTime + timeOffset
+        local hue = ((currentTime * ColorConfig.RainbowSpeed) % 1)
+        return HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
     elseif ColorConfig.SkeletonColorMode == "wave" and ColorConfig.WaveEnabled then
-        baseColor = self:GetWaveColor(baseColor, timeOffset, partIndex or 0, player)
+        return self:GetWaveColor(
+            ColorConfig.BaseBoxColor,
+            ColorConfig.BaseWaveColor,
+            (partIndex or 0) * 50, -- Fake perimeter position
+            300, -- Fake total perimeter
+            player,
+            "wave"
+        )
     end
     
-    -- Apply distance effect
-    return self:GetDistanceColor(baseColor, distance or 0, maxDistance or 1000)
-end
-
--- Box edge animation
-function ColorModule:GetBoxEdgeColors(player, distance, maxDistance)
-    if not ColorConfig.Enabled or not ColorConfig.EdgeAnimationEnabled then
-        local color = self:GetBoxColor(player, distance, maxDistance)
-        return {color, color, color, color} -- Top, Right, Bottom, Left
-    end
-    
-    local currentTime = tick() - startTime
-    local playerOffset = getPlayerOffset(player)
-    local baseTime = currentTime * ColorConfig.EdgeAnimationSpeed * ColorConfig.AnimationSpeed + (playerOffset * 10)
-    
-    local colors = {}
-    for i = 1, 4 do
-        local phaseOffset = (i - 1) * ColorConfig.EdgeColorSeparation -- Configurable phase difference
-        local hue = ((baseTime + phaseOffset) % 1)
-        colors[i] = HSVtoRGB(hue, ColorConfig.RainbowSaturation, ColorConfig.RainbowBrightness)
-        
-        -- Apply distance effect
-        colors[i] = self:GetDistanceColor(colors[i], distance or 0, maxDistance or 1000)
-    end
-    
-    return colors
+    return ColorConfig.BaseBoxColor
 end
 
 -- Configuration functions
@@ -293,20 +295,34 @@ function ColorModule:GetConfig()
     return ColorConfig
 end
 
+-- Convenience setters
+function ColorModule:SetWaveSpeed(speed)
+    ColorConfig.WaveSpeed = speed
+end
+
 function ColorModule:SetRainbowSpeed(speed)
     ColorConfig.RainbowSpeed = speed
 end
 
-function ColorModule:SetEdgeAnimationSpeed(speed)
-    ColorConfig.EdgeAnimationSpeed = speed
+function ColorModule:SetWaveIntensity(intensity)
+    ColorConfig.WaveIntensity = intensity
+end
+
+function ColorModule:SetWaveSize(size)
+    ColorConfig.WaveSize = size
+end
+
+function ColorModule:EnableWave(enabled)
+    ColorConfig.WaveEnabled = enabled
 end
 
 function ColorModule:EnableRainbow(enabled)
     ColorConfig.RainbowEnabled = enabled
 end
 
-function ColorModule:EnableEdgeAnimation(enabled)
-    ColorConfig.EdgeAnimationEnabled = enabled
+function ColorModule:SetBoxColorMode(mode)
+    -- "wave", "rainbow", "pulse", "static"
+    ColorConfig.BoxColorMode = mode
 end
 
 function ColorModule:SetIndividualPlayerColors(enabled)
@@ -321,12 +337,14 @@ end
 -- Reset function
 function ColorModule:Reset()
     startTime = tick()
+    waveTime = 0
     playerColorOffsets = {}
 end
 
--- Version info
-ColorModule.Version = "1.0.0"
-ColorModule.Author = "nikonovice"
 
--- Return the module
+ColorModule.Version = "1.0.1"
+ColorModule.Author = "nikonovice"
+ColorModule.Description = "Hey"
+
+
 return ColorModule
